@@ -134,10 +134,13 @@ class ComercioGeoApp:
         if not df_final.empty and has_filters:
             if st.button("Generar rutas", key="generate_routes"):
                 route_df, route_order = self.map_service.generate_route(df_final, lat_col="num_latitud", lon_col="num_longitud")
-                st.subheader("Ranking de visita")
-                st.dataframe(route_df[["rank", "nbr_direccion", "num_latitud", "num_longitud"]], use_container_width=True)
-                st.subheader("Mapa con rutas")
-                self.map_service.show_route_map(route_df, lat_col="num_latitud", lon_col="num_longitud")
+                if 'rank' not in route_df.columns:
+                    st.error("No se pudo generar el ranking de ruta.")
+                else:
+                    st.subheader("Ranking de visita")
+                    st.dataframe(route_df[["rank", "nbr_direccion", "num_latitud", "num_longitud"]], use_container_width=True)
+                    st.subheader("Mapa con rutas")
+                    self.map_service.show_route_map(route_df, lat_col="num_latitud", lon_col="num_longitud")
 
 
 if __name__ == "__main__":

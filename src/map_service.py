@@ -19,9 +19,14 @@ class MapService:
         if df.empty:
             return df.copy(), []
 
+        if lat_col not in df.columns or lon_col not in df.columns:
+            st.error(f"Columnas '{lat_col}' o '{lon_col}' no encontradas en los datos.")
+            return df.copy(), []
+
         # Preparar datos, mantener todas las columnas
         route_df = df.copy().dropna(subset=[lat_col, lon_col])
         if route_df.empty:
+            st.warning("No hay datos con coordenadas válidas para generar ruta.")
             return df.copy(), []
 
         # Algoritmo de vecino más cercano
