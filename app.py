@@ -279,21 +279,17 @@ class ComercioGeoApp:
                         try:
                             # Leer archivo consolidado
                             if self.map_service.consolidated_file.exists():
-                                consolidated_df = pd.read_excel(self.consolidated_file, engine='openpyxl')
+                                consolidated_df = pd.read_excel(self.map_service.consolidated_file, engine='openpyxl')
 
                                 # Usar el route_id exacto de la ruta seleccionada
-                                route_id_to_delete = selected_to_delete
+                                route_id_to_delete = str(selected_to_delete).strip()
                                 if route_id_to_delete not in consolidated_df['route_id'].astype(str).values:
-                                    parts = selected_to_delete.split('_')
-                                    for part in reversed(parts):
-                                        if part.isdigit():
-                                            route_id_to_delete = part
-                                            break
+                                    route_id_to_delete = route_id_to_delete.split('_')[-1]
 
                                 filtered_df = consolidated_df[consolidated_df['route_id'].astype(str) != route_id_to_delete]
 
                                 # Guardar archivo actualizado
-                                with pd.ExcelWriter(self.consolidated_file, engine='openpyxl') as writer:
+                                with pd.ExcelWriter(self.map_service.consolidated_file, engine='openpyxl') as writer:
                                     filtered_df.to_excel(writer, sheet_name='Rutas', index=False)
 
                                 st.success(f"Ruta '{selected_to_delete}' eliminada exitosamente.")

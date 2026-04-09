@@ -220,16 +220,15 @@ class MapService:
             if df.empty:
                 return pd.DataFrame()
 
-            route_id = str(route_name)
-            if route_id not in df['route_id'].astype(str).values:
-                # Si no coincide directamente, buscar último componente numérico
-                parts = route_name.split('_')
-                for part in reversed(parts):
-                    if part.isdigit():
-                        route_id = part
-                        break
+            route_id = str(route_name).strip()
+            route_matches = df['route_id'].astype(str) == route_id
 
-            route_df = df[df['route_id'].astype(str) == route_id].copy()
+            if not route_matches.any():
+                # Como fallback, intentar buscar una coincidencia por sufijo
+                route_id = route_id.split('_')[-1]
+                route_matches = df['route_id'].astype(str).str.endswith(route_id)
+
+            route_df = df[route_matches].copy()
             return route_df
 
         except Exception as e:
