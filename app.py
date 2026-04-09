@@ -217,53 +217,37 @@ class ComercioGeoApp:
                     col2.metric("Total puntos en rutas", total_points)
                     col3.metric("Promedio puntos por ruta", f"{avg_points_per_route:.1f}")
 
-                    # Estadísticas por KAM
+                    # Estadísticas por ruta para cada KAM
                     if 'kam' in consolidated_df.columns:
-                        # Calcular estadísticas básicas por KAM
-                        kam_basic_stats = consolidated_df.groupby('kam')['route_id'].nunique().reset_index()
-                        kam_basic_stats.columns = ['KAM', 'Rutas generadas']
+                        ruta_stats = []
+                        for route_id in consolidated_df['route_id'].unique():
+                            route_data = consolidated_df[consolidated_df['route_id'] == route_id]
+                            if route_data.empty:
+                                continue
 
-                        # Calcular estadísticas avanzadas por KAM
-                        kam_advanced_stats = []
-                        for kam_name in consolidated_df['kam'].unique():
-                            kam_routes = consolidated_df[consolidated_df['kam'] == kam_name]
-                            route_ids = kam_routes['route_id'].unique()
-
-                            total_distance = 0
-                            total_time_hours = 0
-                            total_routes = len(route_ids)
-
-                            for route_id in route_ids:
-                                route_data = kam_routes[kam_routes['route_id'] == route_id]
-                                if not route_data.empty:
-                                    stats = self.map_service.calculate_route_stats(route_data)
-                                    total_distance += stats['distancia_km']
-                                    total_time_hours += stats['tiempo_estimado_horas']
-
-                            avg_distance = total_distance / total_routes if total_routes > 0 else 0
-                            avg_time = total_time_hours / total_routes if total_routes > 0 else 0
-
-                            kam_advanced_stats.append({
-                                'KAM': kam_name,
-                                'Rutas generadas': total_routes,
-                                'Distancia total (km)': round(total_distance, 1),
-                                'Tiempo total estimado (horas)': round(total_time_hours, 1),
-                                'Distancia promedio por ruta (km)': round(avg_distance, 1),
-                                'Tiempo promedio por ruta (horas)': round(avg_time, 1)
+                            stats = self.map_service.calculate_route_stats(route_data)
+                            first_row = route_data.iloc[0]
+                            ruta_stats.append({
+                                'route_id': route_id,
+                                'KAM': first_row.get('kam', ''),
+                                'Puntos': len(route_data),
+                                'Distancia estimada (km)': stats['distancia_km'],
+                                'Tiempo estimado (h)': stats['tiempo_estimado_horas'],
+                                'Tiempo estimado (min)': stats['tiempo_estimado_minutos'],
+                                'Fecha generación': str(first_row.get('fecha_generacion', ''))[:19]
                             })
 
-                        kam_stats_df = pd.DataFrame(kam_advanced_stats)
-                        kam_stats_df = kam_stats_df.sort_values('Rutas generadas', ascending=False)
+                        ruta_stats_df = pd.DataFrame(ruta_stats)
+                        ruta_stats_df = ruta_stats_df.sort_values(['KAM', 'route_id'])
 
                         st.subheader("📊 Rutas por KAM")
-                        st.dataframe(kam_stats_df, use_container_width=True)
+                        st.dataframe(ruta_stats_df, use_container_width=True)
 
-                        # Descargar resumen por KAM
-                        csv_kam = kam_stats_df.to_csv(index=False)
+                        csv_kam = ruta_stats_df.to_csv(index=False)
                         st.download_button(
-                            label="📊 Descargar resumen completo por KAM",
+                            label="📊 Descargar resumen detallado por ruta",
                             data=csv_kam,
-                            file_name="resumen_completo_rutas_por_kam.csv",
+                            file_name="resumen_rutas_por_kam.csv",
                             mime="text/csv",
                             key="download_kam_summary"
                         )
@@ -297,22 +281,16 @@ class ComercioGeoApp:
                             if self.map_service.consolidated_file.exists():
                                 consolidated_df = pd.read_excel(self.consolidated_file, engine='openpyxl')
 
-                                # Extraer route_id de la ruta seleccionada - buscar el último componente numérico
-                                parts = selected_to_delete.split('_')
-                                route_id_to_delete = None
+                                # Usar el route_id exacto de la ruta seleccionada
+                                route_id_to_delete = selected_to_delete
+                                if route_id_to_delete not in consolidated_df['route_id'].astype(str).values:
+                                    parts = selected_to_delete.split('_')
+                                    for part in reversed(parts):
+                                        if part.isdigit():
+                                            route_id_to_delete = part
+                                            break
 
-                                # Buscar el último componente que sea numérico (el route_id)
-                                for part in reversed(parts):
-                                    if part.isdigit():
-                                        route_id_to_delete = part
-                                        break
-
-                                if route_id_to_delete is None:
-                                    # Si no encontramos un ID numérico, usar el último componente
-                                    route_id_to_delete = parts[-1]
-
-                                # Filtrar eliminando la ruta
-                                filtered_df = consolidated_df[consolidated_df['route_id'] != route_id_to_delete]
+                                filtered_df = consolidated_df[consolidated_df['route_id'].astype(str) != route_id_to_delete]
 
                                 # Guardar archivo actualizado
                                 with pd.ExcelWriter(self.consolidated_file, engine='openpyxl') as writer:

@@ -55,7 +55,7 @@ class MapService:
 
         # Calcular distancia total
         total_distance = 0
-        coords = route_df[[lat_col, lon_col]].dropna()
+        coords = route_df[[lat_col, lon_col]].apply(pd.to_numeric, errors='coerce').dropna()
 
         if len(coords) < 2:
             # Si hay menos de 2 puntos, no hay distancia que calcular
@@ -202,11 +202,7 @@ class MapService:
             routes_info = []
             for route_id, group in df.groupby('route_id'):
                 if len(group) > 0:
-                    first_row = group.iloc[0]
-                    kam = str(first_row.get('kam', '')) if 'kam' in first_row else ''
-                    fecha = str(first_row.get('fecha_generacion', route_id)) if 'fecha_generacion' in first_row else route_id
-                    route_name = f"Ruta_{kam}_{route_id}" if kam else f"Ruta_{route_id}"
-                    routes_info.append(route_name)
+                    routes_info.append(str(route_id))
 
             return sorted(routes_info, reverse=True)  # Más recientes primero
 
@@ -224,22 +220,16 @@ class MapService:
             if df.empty:
                 return pd.DataFrame()
 
-            # Extraer route_id del nombre - buscar el último componente numérico
-            parts = route_name.split('_')
-            route_id = None
+            route_id = str(route_name)
+            if route_id not in df['route_id'].astype(str).values:
+                # Si no coincide directamente, buscar último componente numérico
+                parts = route_name.split('_')
+                for part in reversed(parts):
+                    if part.isdigit():
+                        route_id = part
+                        break
 
-            # Buscar el último componente que sea numérico (el route_id)
-            for part in reversed(parts):
-                if part.isdigit():
-                    route_id = part
-                    break
-
-            if route_id is None:
-                # Si no encontramos un ID numérico, usar el último componente
-                route_id = parts[-1]
-
-            # Filtrar por route_id
-            route_df = df[df['route_id'] == route_id].copy()
+            route_df = df[df['route_id'].astype(str) == route_id].copy()
             return route_df
 
         except Exception as e:
