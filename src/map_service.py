@@ -1,5 +1,8 @@
 import json
-from math import sqrt
+import sys
+from math import sqrt, radians, sin, cos, atan2
+from pathlib import Path
+import threading
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +16,77 @@ class MapService:
         "west": -81.35,
         "east": -68.64,
     }
+
+    def __init__(self):
+        self.routes_dir = Path("routes")
+        self.routes_dir.mkdir(exist_ok=True)
+        self.consolidated_file = self.routes_dir / "rutas_consolidadas.xlsx"
+        self.lock = threading.Lock()  # Para acceso thread-safe
+
+    def haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calcula la distancia en kilómetros entre dos puntos usando la fórmula de Haversine."""
+        R = 6371  # Radio de la Tierra en kilómetros
+
+        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1-a))
+
+        return R * c
+
+    def calculate_route_stats(self, route_df: pd.DataFrame, lat_col: str = None, lon_col: str = None) -> dict:
+        """Calcula estadísticas de la ruta: distancia total y tiempo estimado."""
+        if route_df.empty:
+            return {"distancia_km": 0, "tiempo_estimado_horas": 0, "tiempo_estimado_minutos": 0}
+
+        # Detectar automáticamente las columnas de coordenadas si no se especifican
+        if lat_col is None or lon_col is None:
+            possible_lat_cols = ['num_latitud', 'latitud', 'latitude', 'lat']
+            possible_lon_cols = ['num_longitud', 'longitud', 'longitude', 'lon', 'lng']
+
+            lat_col = next((col for col in possible_lat_cols if col in route_df.columns), None)
+            lon_col = next((col for col in possible_lon_cols if col in route_df.columns), None)
+
+        if lat_col is None or lon_col is None or lat_col not in route_df.columns or lon_col not in route_df.columns:
+            return {"distancia_km": 0, "tiempo_estimado_horas": 0, "tiempo_estimado_minutos": 0}
+
+        # Calcular distancia total
+        total_distance = 0
+        coords = route_df[[lat_col, lon_col]].dropna()
+
+        if len(coords) < 2:
+            # Si hay menos de 2 puntos, no hay distancia que calcular
+            total_distance = 0
+        else:
+            for i in range(len(coords) - 1):
+                lat1, lon1 = coords.iloc[i]
+                lat2, lon2 = coords.iloc[i + 1]
+                # Verificar que las coordenadas sean válidas
+                if pd.notna(lat1) and pd.notna(lon1) and pd.notna(lat2) and pd.notna(lon2):
+                    total_distance += self.haversine_distance(lat1, lon1, lat2, lon2)
+
+        # Estimar tiempo: asumiendo 30 km/h promedio en ciudad + tiempo de visita por punto (15 min)
+        velocidad_promedio_kmh = 30  # km/h
+        tiempo_viaje_horas = total_distance / velocidad_promedio_kmh if velocidad_promedio_kmh > 0 else 0
+        tiempo_visita_horas = len(route_df) * 0.25  # 15 minutos por punto = 0.25 horas
+
+        # Si no hay distancia calculada pero hay puntos, estimar una distancia aproximada
+        if total_distance == 0 and len(route_df) > 1:
+            # Estimación aproximada: asumir 2 km entre puntos consecutivos en promedio para ciudad
+            total_distance = (len(route_df) - 1) * 2.0  # 2 km por segmento
+            tiempo_viaje_horas = total_distance / velocidad_promedio_kmh
+
+        tiempo_total_horas = tiempo_viaje_horas + tiempo_visita_horas
+        tiempo_total_minutos = tiempo_total_horas * 60
+
+        return {
+            "distancia_km": round(total_distance, 2),
+            "tiempo_estimado_horas": round(tiempo_total_horas, 1),
+            "tiempo_estimado_minutos": round(tiempo_total_minutos)
+        }
 
     def generate_route(self, df: pd.DataFrame, lat_col: str = "num_latitud", lon_col: str = "num_longitud") -> tuple[pd.DataFrame, list[int]]:
         """Genera un ranking de visita usando algoritmo de vecino más cercano."""
@@ -54,7 +128,123 @@ class MapService:
         ordered_df = route_df.iloc[route].copy().reset_index(drop=True)
         ordered_df['rank'] = range(1, len(ordered_df) + 1)
 
+        # Guardar la ruta generada
+        self.save_route(ordered_df, lat_col, lon_col)
+
         return ordered_df, route
+
+    def save_route(self, route_df: pd.DataFrame, lat_col: str, lon_col: str) -> None:
+        """Guarda la ruta en el archivo consolidado Excel."""
+        with self.lock:  # Thread-safe
+            try:
+                # Verificar que openpyxl esté disponible
+                try:
+                    import openpyxl
+                except ImportError:
+                    raise Exception("El módulo 'openpyxl' no está instalado. Instale con: pip install openpyxl")
+
+                # Preparar datos para guardar
+                save_df = route_df.copy()
+                save_df['fecha_generacion'] = pd.Timestamp.now()
+                save_df['route_id'] = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+
+                # Columnas a guardar
+                cols_to_save = ['route_id', 'rank', 'fecha_generacion']
+                if 'kam' in save_df.columns:
+                    cols_to_save.append('kam')
+                if 'nbr_direccion' in save_df.columns:
+                    cols_to_save.append('nbr_direccion')
+                if 'grupo_economico' in save_df.columns:
+                    cols_to_save.append('grupo_economico')
+                if lat_col in save_df.columns:
+                    cols_to_save.append(lat_col)
+                if lon_col in save_df.columns:
+                    cols_to_save.append(lon_col)
+
+                save_data = save_df[cols_to_save]
+
+                # Leer archivo existente o crear nuevo
+                if self.consolidated_file.exists():
+                    try:
+                        existing_df = pd.read_excel(self.consolidated_file, engine='openpyxl')
+                        combined_df = pd.concat([existing_df, save_data], ignore_index=True)
+                    except Exception as e:
+                        st.warning(f"Error leyendo archivo existente: {e}. Creando nuevo archivo.")
+                        combined_df = save_data
+                else:
+                    combined_df = save_data
+
+                # Guardar archivo consolidado
+                with pd.ExcelWriter(self.consolidated_file, engine='openpyxl') as writer:
+                    combined_df.to_excel(writer, sheet_name='Rutas', index=False)
+
+            except Exception as e:
+                st.error(f"Error guardando ruta consolidada: {e}")
+                # Fallback: guardar como CSV individual
+                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+                kam_name = str(route_df['kam'].iloc[0]) if 'kam' in route_df.columns and not route_df['kam'].empty else ""
+                filename = f"route_{kam_name}_{timestamp}.csv" if kam_name else f"route_{timestamp}.csv"
+                filepath = self.routes_dir / filename
+                route_df.to_csv(filepath, index=False)
+                st.warning(f"Ruta guardada como archivo individual: {filename}")
+
+    def list_saved_routes(self) -> list[str]:
+        """Lista las rutas guardadas desde el archivo consolidado."""
+        if not self.consolidated_file.exists():
+            return []
+
+        try:
+            df = pd.read_excel(self.consolidated_file, engine='openpyxl')
+            if df.empty:
+                return []
+
+            # Agrupar por route_id y obtener información de cada ruta
+            routes_info = []
+            for route_id, group in df.groupby('route_id'):
+                if len(group) > 0:
+                    first_row = group.iloc[0]
+                    kam = str(first_row.get('kam', '')) if 'kam' in first_row else ''
+                    fecha = str(first_row.get('fecha_generacion', route_id)) if 'fecha_generacion' in first_row else route_id
+                    route_name = f"Ruta_{kam}_{route_id}" if kam else f"Ruta_{route_id}"
+                    routes_info.append(route_name)
+
+            return sorted(routes_info, reverse=True)  # Más recientes primero
+
+        except Exception as e:
+            st.error(f"Error leyendo rutas consolidadas: {e}")
+            return []
+
+    def load_route(self, route_name: str) -> pd.DataFrame:
+        """Carga una ruta específica desde el archivo consolidado."""
+        if not self.consolidated_file.exists():
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_excel(self.consolidated_file, engine='openpyxl')
+            if df.empty:
+                return pd.DataFrame()
+
+            # Extraer route_id del nombre - buscar el último componente numérico
+            parts = route_name.split('_')
+            route_id = None
+
+            # Buscar el último componente que sea numérico (el route_id)
+            for part in reversed(parts):
+                if part.isdigit():
+                    route_id = part
+                    break
+
+            if route_id is None:
+                # Si no encontramos un ID numérico, usar el último componente
+                route_id = parts[-1]
+
+            # Filtrar por route_id
+            route_df = df[df['route_id'] == route_id].copy()
+            return route_df
+
+        except Exception as e:
+            st.error(f"Error cargando ruta {route_name}: {e}")
+            return pd.DataFrame()
 
     def show_route_map(
         self,

@@ -137,10 +137,196 @@ class ComercioGeoApp:
                 if 'rank' not in route_df.columns:
                     st.error("No se pudo generar el ranking de ruta.")
                 else:
+                    st.success("Ruta generada y guardada exitosamente.")
                     st.subheader("Ranking de visita")
                     st.dataframe(route_df[["rank", "nbr_direccion", "num_latitud", "num_longitud"]], use_container_width=True)
                     st.subheader("Mapa con rutas")
                     self.map_service.show_route_map(route_df, lat_col="num_latitud", lon_col="num_longitud")
+
+        # Sección para ver rutas guardadas
+        st.divider()
+        st.subheader("Rutas guardadas")
+        saved_routes = self.map_service.list_saved_routes()
+        if saved_routes:
+            selected_route = st.selectbox("Seleccionar ruta guardada", saved_routes, key="saved_route")
+            if selected_route:
+                loaded_route = self.map_service.load_route(selected_route)
+                if not loaded_route.empty:
+                    # Mostrar información de la ruta
+                    route_info = loaded_route.iloc[0] if len(loaded_route) > 0 else {}
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Puntos en ruta", len(loaded_route))
+                    if 'kam' in route_info:
+                        col2.metric("KAM", str(route_info['kam']))
+                    if 'fecha_generacion' in route_info:
+                        col3.metric("Fecha", str(route_info['fecha_generacion'])[:19])
+
+                    st.dataframe(loaded_route, use_container_width=True)
+                    if st.button("Mostrar mapa de ruta guardada", key="show_saved_route"):
+                        self.map_service.show_route_map(loaded_route, lat_col="num_latitud", lon_col="num_longitud")
+                else:
+                    st.error("No se pudo cargar la ruta seleccionada.")
+        else:
+            st.info("No hay rutas guardadas aún.")
+
+        # Opción para descargar rutas
+        if saved_routes:
+            st.subheader("Descargar rutas")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_download = st.selectbox("Seleccionar ruta para descargar", saved_routes, key="download_select")
+            with col2:
+                if selected_download:
+                    route_df = self.map_service.load_route(selected_download)
+                    if not route_df.empty:
+                        csv_data = route_df.to_csv(index=False)
+                        st.download_button(
+                            label="Descargar CSV",
+                            data=csv_data,
+                            file_name=f"{selected_download}.csv",
+                            mime="text/csv",
+                            key="download_button"
+                        )
+
+            # Descargar archivo consolidado completo
+            if self.map_service.consolidated_file.exists():
+                with open(self.map_service.consolidated_file, "rb") as f:
+                    st.download_button(
+                        label="📊 Descargar archivo consolidado completo (Excel)",
+                        data=f,
+                        file_name="rutas_consolidadas.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_consolidated"
+                    )
+
+        # Estadísticas consolidadas
+        if saved_routes:
+            st.subheader("📈 Estadísticas consolidadas")
+
+            # Leer archivo consolidado para estadísticas
+            if self.map_service.consolidated_file.exists():
+                try:
+                    consolidated_df = pd.read_excel(self.map_service.consolidated_file, engine='openpyxl')
+
+                    total_routes = consolidated_df['route_id'].nunique()
+                    total_points = len(consolidated_df)
+                    avg_points_per_route = total_points / total_routes if total_routes > 0 else 0
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total rutas generadas", total_routes)
+                    col2.metric("Total puntos en rutas", total_points)
+                    col3.metric("Promedio puntos por ruta", f"{avg_points_per_route:.1f}")
+
+                    # Estadísticas por KAM
+                    if 'kam' in consolidated_df.columns:
+                        # Calcular estadísticas básicas por KAM
+                        kam_basic_stats = consolidated_df.groupby('kam')['route_id'].nunique().reset_index()
+                        kam_basic_stats.columns = ['KAM', 'Rutas generadas']
+
+                        # Calcular estadísticas avanzadas por KAM
+                        kam_advanced_stats = []
+                        for kam_name in consolidated_df['kam'].unique():
+                            kam_routes = consolidated_df[consolidated_df['kam'] == kam_name]
+                            route_ids = kam_routes['route_id'].unique()
+
+                            total_distance = 0
+                            total_time_hours = 0
+                            total_routes = len(route_ids)
+
+                            for route_id in route_ids:
+                                route_data = kam_routes[kam_routes['route_id'] == route_id]
+                                if not route_data.empty:
+                                    stats = self.map_service.calculate_route_stats(route_data)
+                                    total_distance += stats['distancia_km']
+                                    total_time_hours += stats['tiempo_estimado_horas']
+
+                            avg_distance = total_distance / total_routes if total_routes > 0 else 0
+                            avg_time = total_time_hours / total_routes if total_routes > 0 else 0
+
+                            kam_advanced_stats.append({
+                                'KAM': kam_name,
+                                'Rutas generadas': total_routes,
+                                'Distancia total (km)': round(total_distance, 1),
+                                'Tiempo total estimado (horas)': round(total_time_hours, 1),
+                                'Distancia promedio por ruta (km)': round(avg_distance, 1),
+                                'Tiempo promedio por ruta (horas)': round(avg_time, 1)
+                            })
+
+                        kam_stats_df = pd.DataFrame(kam_advanced_stats)
+                        kam_stats_df = kam_stats_df.sort_values('Rutas generadas', ascending=False)
+
+                        st.subheader("📊 Rutas por KAM")
+                        st.dataframe(kam_stats_df, use_container_width=True)
+
+                        # Descargar resumen por KAM
+                        csv_kam = kam_stats_df.to_csv(index=False)
+                        st.download_button(
+                            label="📊 Descargar resumen completo por KAM",
+                            data=csv_kam,
+                            file_name="resumen_completo_rutas_por_kam.csv",
+                            mime="text/csv",
+                            key="download_kam_summary"
+                        )
+
+                except Exception as e:
+                    st.error(f"Error cargando estadísticas: {e}")
+
+        # Gestión de rutas
+        if saved_routes:
+            st.subheader("🗂️ Gestión de rutas")
+            st.warning("⚠️ Las eliminaciones son permanentes. El archivo consolidado se modificará.")
+
+            # Eliminar ruta específica
+            selected_to_delete = st.selectbox(
+                "Seleccionar ruta para eliminar",
+                ["Ninguna"] + saved_routes,
+                key="delete_select"
+            )
+
+            if selected_to_delete != "Ninguna":
+                # Mostrar información de la ruta a eliminar
+                route_df = self.map_service.load_route(selected_to_delete)
+                if not route_df.empty:
+                    st.info(f"Esta ruta tiene {len(route_df)} puntos.")
+                    if 'kam' in route_df.columns:
+                        st.info(f"KAM: {route_df['kam'].iloc[0]}")
+
+                    if st.button(f"🗑️ Eliminar ruta '{selected_to_delete}'", key="delete_route"):
+                        try:
+                            # Leer archivo consolidado
+                            if self.map_service.consolidated_file.exists():
+                                consolidated_df = pd.read_excel(self.consolidated_file, engine='openpyxl')
+
+                                # Extraer route_id de la ruta seleccionada - buscar el último componente numérico
+                                parts = selected_to_delete.split('_')
+                                route_id_to_delete = None
+
+                                # Buscar el último componente que sea numérico (el route_id)
+                                for part in reversed(parts):
+                                    if part.isdigit():
+                                        route_id_to_delete = part
+                                        break
+
+                                if route_id_to_delete is None:
+                                    # Si no encontramos un ID numérico, usar el último componente
+                                    route_id_to_delete = parts[-1]
+
+                                # Filtrar eliminando la ruta
+                                filtered_df = consolidated_df[consolidated_df['route_id'] != route_id_to_delete]
+
+                                # Guardar archivo actualizado
+                                with pd.ExcelWriter(self.consolidated_file, engine='openpyxl') as writer:
+                                    filtered_df.to_excel(writer, sheet_name='Rutas', index=False)
+
+                                st.success(f"Ruta '{selected_to_delete}' eliminada exitosamente.")
+                                st.rerun()
+                            else:
+                                st.error("Archivo consolidado no encontrado.")
+                        except Exception as e:
+                            st.error(f"Error eliminando ruta: {e}")
+                else:
+                    st.error(f"No se pudo cargar la ruta '{selected_to_delete}' para eliminar.")
+                    st.info("Verifique que el archivo consolidado existe y contiene rutas.")
 
 
 if __name__ == "__main__":
